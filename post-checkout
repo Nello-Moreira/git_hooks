@@ -1,0 +1,105 @@
+# !/bin/sh
+
+#
+# This hook will be called when you execute a checkout to another branch
+# and will change the DATABASE_URL variable depending on the base branch.
+# It will also execute a "yarn" command at the end.
+#
+# You may have 3 branches (development, staging and production branch)
+# and call them what you want (if you put the correct name on the variables below).
+#
+
+env_filename=".env"
+repository_name="repo"
+dev="master"
+staging="staging"
+production="production"
+
+dev_branch="${repository_name}/${dev}"
+staging_branch="${repository_name}/${staging}"
+production_branch="${repository_name}/${production}"
+
+dev_db="${repository_name}_${dev}"
+staging_db="${repository_name}_${staging}"
+production_db="${repository_name}_${production}"
+
+to_branch_hash=$2
+to_branch_name=$(git name-rev $to_branch_hash --name-only)
+
+checkout_type=$3
+# just do something if checkout in branches
+if [ $checkout_type -ne 1 ]
+then
+    exit 0 ;
+fi
+
+function count_commits_between_branches {
+  local first_branch=$1
+  local second_branch=$2
+  local commit_list=()
+
+  for i in $(git log ${first_branch}..${second_branch} --pretty=format:"%h");do
+    commit_list+=($i)
+  done
+  echo ${#commit_list[@]}
+}
+
+function get_base_branch {
+  local arg_branch=$1
+  local dev_diff=$(count_commits_between_branches $dev_branch $arg_branch)
+  local staging_diff=$(count_commits_between_branches $staging_branch $arg_branch)
+  local production_diff=$(count_commits_between_branches $production_branch $arg_branch)
+
+  if [ $dev_diff -eq 0 ]; then
+    echo $dev
+  elif [ $staging_diff -eq 0 ]; then
+    echo $staging
+  elif [ $production_diff -eq 0 ]; then
+    echo $production
+  elif [ $staging_diff -gt $dev_diff ] && [ $production_diff -gt $dev_diff ]; then
+    echo $dev
+  elif [ $production_diff -gt $staging_diff ]; then
+    echo $staging
+  else
+    echo $production
+  fi
+}
+
+function new_db_url {
+  local env=$1
+  local base_url=$2
+
+  if [ $env = $production ]; then
+    echo "$base_url/$production_db'"
+  elif [ $env = $staging ]; then
+    echo "$base_url/$staging_db'"
+  else
+    echo "$base_url/$dev_db'"
+  fi
+}
+
+function change_environment {
+  local base_branch=$1
+
+  while IFS= read -r line; do
+    IFS='=' read -r split_row <<< $line
+    split_row=($split_row)
+
+    if [ "${split_row[0]}" = 'DATABASE_URL' ]; then
+      echo "${split_row[0]}=$(new_db_url $base_branch ${split_row[1]%/*})"
+
+    else
+      printf '%s\n' "$line"
+    fi
+  done < $env_filename > 'tmp.env'
+  mv 'tmp.env' $env_filename
+}
+
+# Execute commands
+base_branch=$(get_base_branch $to_branch_name)
+change_environment $base_branch
+yarn
+
+# Feedback to the user
+echo "\n\nThis branch is based on $base_branch"
+echo "Changing DATABASE_URL accordingly\n"
